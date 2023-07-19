@@ -1,4 +1,4 @@
-[![GoDoc](https://godoc.org/github.com/shimingyah/pool?status.svg)](https://godoc.org/github.com/shimingyah/pool) [![Go Report Card](https://goreportcard.com/badge/github.com/shimingyah/pool?style=flat-square)](https://goreportcard.com/report/github.com/shimingyah/pool) [![LICENSE](https://img.shields.io/badge/licence-MIT-brightgreen.svg?style=flat-square)](https://github.com/VegetableDoggies/fabric-gateway-pool-go/blob/master/LICENSE)
+[![GoDoc](https://godoc.org/github.com/VegetableDoggies/fabric-gateway-pool-go?status.svg)](https://godoc.org/github.com/VegetableDoggies/fabric-gateway-pool-go) [![Go Report Card](https://goreportcard.com/badge/github.com/VegetableDoggies/fabric-gateway-pool-go?style=flat-square)](https://goreportcard.com/report/github.com/VegetableDoggies/fabric-gateway-pool-go) [![LICENSE](https://img.shields.io/badge/licence-MIT-brightgreen.svg?style=flat-square)](https://github.com/VegetableDoggies/fabric-gateway-pool-go/blob/master/LICENSE)
 
 
 
@@ -18,3 +18,16 @@ gateway client pool for Fabric 2.4+
 
 
 ## Getting started
+
+### install
+
+------
+
+Import package:
+```go
+import "github.com/VegetableDoggies/fabric-gateway-pool-go"
+
+```
+```shell
+go get github.com/VegetableDoggies/fabric-gateway-pool-go
+```
