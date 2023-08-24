@@ -8,8 +8,6 @@ import "time"
 
 type Options struct {
 	PoolSize          int           `json:"poolSize"`                               // 连接池大小
-	MaxIdle           int           `json:"maxIdle"`                                // 最大空闲链接数
-	MinActive         int           `json:"minActive"`                              // 最小可用链接数
 	HeartbeatCheck    bool          `json:"heartbeatCheck"`                         // 是否开启心跳检测
 	HeartbeatInterval time.Duration `json:"heartbeatInterval"`                      // 心跳检测间隔
 	MspID             string        `json:"mspID" yaml:"mspID"`                     // mspID

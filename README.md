@@ -13,7 +13,6 @@ gateway client pool for Fabric 2.4+
 - unit test
 - 更好的心跳检测方式
 - examples
-- CAS代替chan
 
 
 

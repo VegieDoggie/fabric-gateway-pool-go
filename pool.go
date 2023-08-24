@@ -6,24 +6,23 @@ package fabric_gateway_pool_go
 
 import (
 	"fmt"
-	"github.com/hyperledger/fabric-gateway/pkg/client"
 	"runtime"
-	"sync"
+	"sync/atomic"
 	"time"
+
+	"github.com/hyperledger/fabric-gateway/pkg/client"
 )
 
 type HlfGWPool struct {
-	mux               sync.Mutex
 	conf              *Options
 	poolSize          int
-	minActive         int // 最小存活连接数量
-	maxIdle           int // 最大空闲连接数量
-	connections       []*client.Gateway
 	idleConnections   chan *client.Gateway
 	heartbeatCheck    bool
 	heartbeatInterval time.Duration
-	closeCh           chan struct{}
 	factory           func(options *Options) (*client.Gateway, error)
+	curSize           int32
+	close             int32
+	creating          int32
 }
 
 func NewHlfGWPool(option *Options) (*HlfGWPool, error) {
@@ -31,24 +30,15 @@ func NewHlfGWPool(option *Options) (*HlfGWPool, error) {
 		return nil, fmt.Errorf("pool size must be greater than 0")
 	}
 
-	if option.MinActive < 0 || option.MinActive > option.PoolSize {
-		return nil, fmt.Errorf("minimum active connections must be between 0 and pool size")
-	}
-
-	if option.MaxIdle < option.MinActive {
-		return nil, fmt.Errorf("maximum idle connections must be greater than or equal to minimum active connections")
-	}
-
 	pool := &HlfGWPool{
 		poolSize:          option.PoolSize,
-		minActive:         option.MinActive,
-		maxIdle:           option.MaxIdle,
-		connections:       make([]*client.Gateway, option.PoolSize),
-		idleConnections:   make(chan *client.Gateway, option.MaxIdle),
+		idleConnections:   make(chan *client.Gateway, option.PoolSize),
 		heartbeatCheck:    option.HeartbeatCheck,
 		heartbeatInterval: option.HeartbeatInterval,
 		factory:           NewGateway,
 		conf:              option,
+		curSize:           0,
+		close:             0,
 	}
 
 	for i := 0; i < option.PoolSize; i++ {
@@ -56,9 +46,8 @@ func NewHlfGWPool(option *Options) (*HlfGWPool, error) {
 		if err != nil {
 			return nil, fmt.Errorf("failed to create connection: %v", err)
 		}
-
-		pool.connections[i] = conn
 		pool.idleConnections <- conn
+		atomic.AddInt32(&pool.curSize, 1)
 	}
 
 	if pool.heartbeatCheck {
@@ -69,17 +58,17 @@ func NewHlfGWPool(option *Options) (*HlfGWPool, error) {
 }
 
 func (pool *HlfGWPool) startHeartbeatCheck() {
-	pool.closeCh = make(chan struct{})
 
 	go func() {
 		ticker := time.NewTicker(pool.heartbeatInterval)
 		defer ticker.Stop()
 
 		for {
-			select {
-			case <-pool.closeCh:
+			if pool.close > 0 {
 				runtime.Goexit()
 				return
+			}
+			select {
 			case <-ticker.C:
 				pool.checkHeartbeat()
 			}
@@ -89,61 +78,42 @@ func (pool *HlfGWPool) startHeartbeatCheck() {
 
 // checkHeartbeat checks the heartbeat of connections and closes invalid connections
 func (pool *HlfGWPool) checkHeartbeat() {
-	pool.mux.Lock()
-	defer pool.mux.Unlock()
-
-	for i, conn := range pool.connections {
-		// TODO: 修改检测方式
-		if conn.GetNetwork(pool.conf.ChannelName) == nil {
-			pool.connections[i] = nil
-			err := conn.Close()
-			if err != nil {
-				panic(err)
+	if pool.heartbeatCheck {
+		for conn := range pool.idleConnections {
+			if conn.GetNetwork(pool.conf.ChannelName) == nil {
+				atomic.AddInt32(&pool.curSize, -1)
+				err := conn.Close()
+				if err != nil {
+					continue
+				}
 			}
-		}
-
-		if pool.idleConnections != nil && len(pool.idleConnections) > pool.maxIdle {
-			pool.connections[i] = nil
-			idleConn := <-pool.idleConnections
-			err := idleConn.Close()
-			if err != nil {
-				panic(err)
-			}
+			pool.idleConnections <- conn
 		}
 	}
-
-	compactConnections := make([]*client.Gateway, 0, pool.poolSize)
-	for _, conn := range pool.connections {
-		if conn != nil {
-			compactConnections = append(compactConnections, conn)
-		}
-	}
-
-	pool.connections = compactConnections
 }
 
 // GetConnection retrieves a Fabric Gateway connection from the pool
 func (pool *HlfGWPool) GetConnection() (*client.Gateway, error) {
-	conn := <-pool.idleConnections
-	if conn != nil {
+	select {
+	case conn := <-pool.idleConnections:
 		return conn, nil
+	default:
+		if pool.curSize < int32(pool.poolSize) {
+			if atomic.CompareAndSwapInt32(&pool.creating, 0, 1) {
+				conn, err := pool.factory(pool.conf)
+				if err != nil {
+					return nil, fmt.Errorf("failed to create connection: %v", err)
+				}
+				atomic.AddInt32(&pool.curSize, 1)
+				atomic.StoreInt32(&pool.creating, 0)
+				return conn, nil
+			} else {
+				return pool.GetConnection()
+			}
+		} else {
+			return pool.GetConnection()
+		}
 	}
-
-	pool.mux.Lock()
-	defer pool.mux.Unlock()
-
-	if len(pool.idleConnections) > 0 {
-		conn = <-pool.idleConnections
-		return conn, nil
-	}
-
-	conn, err := pool.factory(pool.conf)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create connection: %v", err)
-	}
-
-	pool.connections = append(pool.connections, conn)
-	return conn, nil
 }
 
 // ReleaseConnection releases a Fabric Gateway connection back to the pool
@@ -153,16 +123,16 @@ func (pool *HlfGWPool) ReleaseConnection(conn *client.Gateway) {
 
 // Close releases all resources used by the connection pool
 func (pool *HlfGWPool) Close() (err error) {
-	pool.mux.Lock()
-	defer pool.mux.Unlock()
-
-	for _, conn := range pool.connections {
+	atomic.AddInt32(&pool.close, 1)
+	for conn := range pool.idleConnections {
 		if conn != nil {
+			atomic.AddInt32(&pool.curSize, -1)
 			err = conn.Close()
 			continue
 		}
 	}
 
-	close(pool.closeCh)
+	atomic.StoreInt32(&pool.curSize, 0)
+	close(pool.idleConnections)
 	return err
 }
